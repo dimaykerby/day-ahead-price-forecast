@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+*.joblib
+models/*.json
+.DS_Store
+.python-version
+electricity_dah_prices.csv
