@@ -48,8 +48,8 @@ class LGBMForecaster:
         callbacks = [self._lgb.log_evaluation(period=-1)]
         fit_kwargs: dict = {}
         if X_val is not None:
-            fit_kwargs["eval_X"] = [X_val]
-            fit_kwargs["eval_y"] = [y_val]
+            fit_kwargs["eval_X"] = X_val
+            fit_kwargs["eval_y"] = y_val
             callbacks.append(self._lgb.early_stopping(50, verbose=False))
         self.model.fit(X_train, y_train, callbacks=callbacks, **fit_kwargs)
         return self
@@ -109,17 +109,35 @@ class GPForecaster:
 
     def fit(self, X_train: pd.DataFrame, y_train: pd.Series):
         X_sub = self._select(X_train).tail(self.n_train_max)
-        y_sub = y_train.loc[X_sub.index]
+        # Use the pre-computed rolling z-score of the target so GP works on a
+        # stationary, unit-variance signal rather than raw crisis-level prices.
+        self._use_zscore = "roll_zscore_24h" in X_train.columns
+        if self._use_zscore:
+            y_sub = X_train.loc[X_sub.index, "roll_zscore_24h"]
+            self._y_mean = X_train["roll_mean_24h"].loc[X_sub.index]
+            self._y_std = X_train["roll_std_24h"].loc[X_sub.index]
+        else:
+            y_sub = y_train.loc[X_sub.index]
         self.scaler.fit(X_sub)
         self.model.fit(self.scaler.transform(X_sub), y_sub.values)
         return self
 
     def predict(self, X: pd.DataFrame, return_std: bool = False):
         Xs = self.scaler.transform(X[self._feature_cols])
-        return self.model.predict(Xs, return_std=return_std)
+        result = self.model.predict(Xs, return_std=return_std)
+        if not self._use_zscore:
+            return result
+        # Inverse-transform: use the test-set rolling stats for reconstruction
+        mu = X["roll_mean_24h"].values
+        sigma = X["roll_std_24h"].values + 1e-8
+        if return_std:
+            z, z_std = result
+            return z * sigma + mu, z_std * sigma
+        return result * sigma + mu
 
     def save(self, path: str):
-        joblib.dump({"model": self.model, "scaler": self.scaler, "features": self._feature_cols}, path)
+        joblib.dump({"model": self.model, "scaler": self.scaler, "features": self._feature_cols,
+                     "use_zscore": self._use_zscore}, path)
 
     @classmethod
     def load(cls, path: str) -> "GPForecaster":
@@ -128,6 +146,7 @@ class GPForecaster:
         obj.model = data["model"]
         obj.scaler = data["scaler"]
         obj._feature_cols = data["features"]
+        obj._use_zscore = data.get("use_zscore", False)
         return obj
 
 
@@ -171,6 +190,7 @@ class LSTMForecaster:
         self.epochs = epochs
         self.batch_size = batch_size
         self.scaler = StandardScaler()
+        self.y_scaler = StandardScaler()  # normalise target to zero-mean unit-variance
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: _LSTMNet | None = None
         self._feature_cols: list[str] = []
@@ -182,7 +202,9 @@ class LSTMForecaster:
 
     def fit(self, X_train: pd.DataFrame, y_train: pd.Series, verbose: bool = True):
         X_arr = self.scaler.fit_transform(self._select(X_train))
-        y_arr = y_train.values.astype(np.float32)
+        y_arr = self.y_scaler.fit_transform(
+            y_train.values.reshape(-1, 1)
+        ).ravel().astype(np.float32)
 
         # Build sliding-window sequences
         n = len(X_arr)
@@ -240,13 +262,16 @@ class LSTMForecaster:
         # seqs[0] covers combined[0:seq_len] → prediction for combined[seq_len]
         # When context has seq_len rows, combined[seq_len] = X[0], so preds align directly.
         n_drop = len(combined) - len(X) - self.seq_len
-        return preds[max(0, n_drop):]
+        preds = preds[max(0, n_drop):]
+        # Inverse-transform from normalised target space back to EUR/MWh
+        return self.y_scaler.inverse_transform(preds.reshape(-1, 1)).ravel()
 
     def save(self, path: str):
         joblib.dump(
             {
                 "state": self.model.state_dict(),
                 "scaler": self.scaler,
+                "y_scaler": self.y_scaler,
                 "features": self._feature_cols,
                 "cfg": {
                     "input_size": len(self._feature_cols),
@@ -264,6 +289,7 @@ class LSTMForecaster:
         cfg = data["cfg"]
         obj = cls(seq_len=cfg["seq_len"], hidden=cfg["hidden"], layers=cfg["layers"])
         obj.scaler = data["scaler"]
+        obj.y_scaler = data["y_scaler"]
         obj._feature_cols = data["features"]
         obj.model = _LSTMNet(cfg["input_size"], cfg["hidden"], cfg["layers"])
         obj.model.load_state_dict(data["state"])
