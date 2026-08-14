@@ -190,6 +190,62 @@ Open `http://localhost:8501`. The app has three tabs:
 
 > Run at least one `python train.py` before opening the Forecast tab.
 
+### Monte Carlo BESS Arbitrage
+
+You can extend the price forecast into a battery-investment style analysis:
+
+1. Build residual-driven price scenarios around the point forecast
+2. Dispatch a battery in each scenario with SoC and efficiency constraints
+3. Annualize arbitrage revenues and compute P10/P50/P90
+4. Run sensitivity cases and a simple NPV/IRR snapshot
+
+Run:
+
+```bash
+# Ensure the project pyenv is active
+pyenv activate day_ahead_forecast
+
+# Train at least one model for the chosen target (example: Italy + LightGBM)
+python train.py --target italy --models lgbm
+
+# Monte Carlo arbitrage run (1000 scenarios, 4-day horizon)
+python monte_carlo_arbitrage.py \
+  --target italy \
+  --model lgbm \
+  --n-sims 1000 \
+  --horizon-hours 96 \
+  --error-model bootstrap
+```
+
+Example result from a validated run (`italy`, `lgbm`, `n-sims=1000`, `horizon=96h`):
+
+- Annual revenue P10: ~543,832 EUR
+- Annual revenue P50: ~734,623 EUR
+- Annual revenue P90: ~814,051 EUR
+
+Outputs are written under `outputs/`:
+
+- `annual_revenue_distribution.csv` — one annualized revenue per scenario
+- `annual_revenue_histogram.html` — histogram with P10/P50/P90 markers
+- `sensitivity_table.csv` — base and stress cases (efficiency, spreads, availability)
+- `finance_p50.csv` — simple project/equity NPV and IRR at P50 revenue
+- `investment_memo.md` — short investment-style narrative summary
+
+#### Error Model Options
+
+- `bootstrap` (default): resample historical forecast residuals
+- `garch`: fit GARCH(1,1) volatility on residuals and sample shocks with forecasted sigma
+
+#### Dispatch Simplification
+
+The default dispatch is intentionally simple and transparent:
+
+- Daily greedy ranking of cheapest charge hours and highest discharge hours
+- SoC band, power limit, and round-trip efficiency are respected
+- Revenue is gross arbitrage spread before market fees and imbalance costs
+
+This is a practical first benchmark before moving to a full LP/MILP optimizer.
+
 ---
 
 ## Results

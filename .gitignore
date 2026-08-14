@@ -6,3 +6,5 @@ models/*.json
 .DS_Store
 .python-version
 electricity_dah_prices.csv
+outputs/
+outputs_*/
