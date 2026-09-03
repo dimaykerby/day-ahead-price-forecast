@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.features import COUNTRIES, load_data, build_features
+from src.models import TimesFMForecaster
 
 DATA_PATH = "data/electricity_dah_prices.csv"
 MODELS_DIR = "models"
@@ -20,7 +21,7 @@ MODELS_DIR = "models"
 st.set_page_config(page_title="Day-Ahead Price Forecast", layout="wide")
 st.title("⚡ Day-Ahead Electricity Price Forecasting")
 st.caption(
-    "Benchmarking LightGBM · Gaussian Process · LSTM on the ENTSO-E 2022 European price dataset."
+    "Benchmarking LightGBM · Gaussian Process · LSTM · TimesFM-3 on the ENTSO-E 2022 European price dataset."
 )
 
 # ---------------------------------------------------------------------------
@@ -166,10 +167,10 @@ with tab_forecast:
     st.subheader("Inspect Model Predictions vs Actuals")
 
     f_target = st.selectbox("Target country", COUNTRIES, key="f_target")
-    f_model = st.selectbox("Model", ["lgbm", "gp", "lstm"], key="f_model")
+    f_model = st.selectbox("Model", ["lgbm", "gp", "lstm", "timesfm"], key="f_model")
 
     model_path = Path(MODELS_DIR) / f"{f_model}_{f_target}.joblib"
-    if not model_path.exists():
+    if f_model != "timesfm" and not model_path.exists():
         st.warning(f"No trained model found at `{model_path}`. Go to **Model Benchmark** and run training first.")
         st.stop()
 
@@ -181,6 +182,8 @@ with tab_forecast:
         elif model_name == "gp":
             from src.models import GPForecaster
             return GPForecaster.load(str(Path(MODELS_DIR) / f"gp_{target}.joblib"))
+        elif model_name == "timesfm":
+            return TimesFMForecaster(device="cpu", batch_size=8)
         else:
             from src.models import LSTMForecaster
             return LSTMForecaster.load(str(Path(MODELS_DIR) / f"lstm_{target}.joblib"))
@@ -197,6 +200,10 @@ with tab_forecast:
             preds, stds = model.predict(X_test, return_std=True)
         elif f_model == "lstm":
             preds = model.predict(X_test, context=X_train)
+            stds = None
+        elif f_model == "timesfm":
+            preds = model.predict(y.iloc[:split].values.astype(np.float32), horizon=len(y_test), return_quantiles=False)
+            preds = np.asarray(preds, dtype=np.float32).reshape(-1)
             stds = None
         else:
             preds = model.predict(X_test)

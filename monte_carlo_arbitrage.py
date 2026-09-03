@@ -27,7 +27,7 @@ import pandas as pd
 import plotly.express as px
 
 from src.features import build_features, load_data
-from src.models import GPForecaster, LGBMForecaster, LSTMForecaster
+from src.models import GPForecaster, LGBMForecaster, LSTMForecaster, TimesFMForecaster
 
 
 @dataclass
@@ -60,6 +60,8 @@ def _load_model(model_name: str, model_path: Path):
         return GPForecaster.load(str(model_path))
     if model_name == "lstm":
         return LSTMForecaster.load(str(model_path))
+    if model_name == "timesfm":
+        return TimesFMForecaster(device="cpu", batch_size=8)
     raise ValueError(f"Unknown model: {model_name}")
 
 
@@ -78,7 +80,7 @@ def _get_point_forecast_and_residuals(
     y_train, y_test = y.iloc[:split], y.iloc[split:]
 
     model_path = Path(models_dir) / f"{model_name}_{target}.joblib"
-    if not model_path.exists():
+    if model_name != "timesfm" and not model_path.exists():
         raise FileNotFoundError(
             f"Trained model not found at {model_path}. Run train.py first for this target/model."
         )
@@ -88,6 +90,9 @@ def _get_point_forecast_and_residuals(
         preds_test, _ = model.predict(X_test, return_std=True)
     elif model_name == "lstm":
         preds_test = model.predict(X_test, context=X_train)
+    elif model_name == "timesfm":
+        preds_test = model.predict(y_train.values.astype(np.float32), horizon=horizon_hours, return_quantiles=False)
+        preds_test = np.asarray(preds_test, dtype=np.float32).reshape(-1)
     else:
         preds_test = model.predict(X_test)
 
@@ -399,7 +404,7 @@ def main():
     parser.add_argument("--data", default="data/electricity_dah_prices.csv")
     parser.add_argument("--models-dir", default="models")
     parser.add_argument("--target", default="italy")
-    parser.add_argument("--model", default="lgbm", choices=["lgbm", "gp", "lstm"])
+    parser.add_argument("--model", default="lgbm", choices=["lgbm", "gp", "lstm", "timesfm"])
     parser.add_argument("--error-model", default="bootstrap", choices=["bootstrap", "garch"])
     parser.add_argument("--n-sims", type=int, default=1000)
     parser.add_argument("--horizon-hours", type=int, default=96)

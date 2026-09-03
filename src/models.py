@@ -20,6 +20,7 @@ import torch.nn as nn
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
 from sklearn.preprocessing import StandardScaler
+from timesfm3 import TimesFM3Evaluator, ModelConfig
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +296,46 @@ class LSTMForecaster:
         obj.model.load_state_dict(data["state"])
         obj.model.eval()
         return obj
+
+class TimesFMForecaster:
+    def __init__(self, checkpoint_path="google/timesfm-3.0-pytorch", device="cpu", batch_size=8):
+        config = ModelConfig(
+            checkpoint_path=checkpoint_path,
+            per_core_batch_size=batch_size,
+            device=device,
+        )
+        self.model = TimesFM3Evaluator(config)
+
+    @staticmethod
+    def _extract_forecast(output):
+        if hasattr(output, "forecast"):
+            return np.asarray(output.forecast, dtype=np.float32)
+        if hasattr(output, "quantiles") and output.quantiles is not None:
+            return np.asarray(output.quantiles, dtype=np.float32)
+        if isinstance(output, dict):
+            for key in ("mean", "median", "forecast", "predictions", "yhat"):
+                if key in output:
+                    return np.asarray(output[key], dtype=np.float32)
+            return np.asarray(list(output.values())[0], dtype=np.float32)
+        if isinstance(output, (tuple, list)):
+            first = output[0]
+            if isinstance(first, dict):
+                return TimesFMForecaster._extract_forecast(first)
+            return np.asarray(first, dtype=np.float32)
+        return np.asarray(output, dtype=np.float32)
+
+    def predict(self, series: np.ndarray, horizon: int = 12, return_quantiles: bool = False):
+        series_arr = np.asarray(series, dtype=np.float32).reshape(-1)
+        outputs = list(
+            self.model.predict_batch(
+                [series_arr],
+                horizon=horizon,
+                return_quantiles=return_quantiles,
+                use_symmetric_averaging=False,
+            )
+        )
+        if not outputs:
+            raise RuntimeError("TimesFM returned no forecast output")
+        if return_quantiles:
+            return outputs[0]
+        return self._extract_forecast(outputs[0])

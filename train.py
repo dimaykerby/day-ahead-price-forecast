@@ -18,7 +18,7 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error
 
 from src.features import COUNTRIES, load_data, build_features
-from src.models import GPForecaster, LGBMForecaster, LSTMForecaster
+from src.models import GPForecaster, LGBMForecaster, LSTMForecaster, TimesFMForecaster
 
 
 def rmse(y_true, y_pred):
@@ -37,7 +37,7 @@ def run_benchmark(
     models_dir: str = "models",
     which: list[str] | None = None,
 ) -> dict:
-    which = which or ["lgbm", "gp", "lstm"]
+    which = which or ["lgbm", "gp", "lstm", "timesfm"]
     Path(models_dir).mkdir(exist_ok=True)
 
     print(f"Loading data from {data_path} …")
@@ -55,9 +55,13 @@ def run_benchmark(
     y_tr, y_val = y_train.iloc[:val_split], y_train.iloc[val_split:]
 
     results: dict[str, dict] = {}
+    selected_models = [name for name in ["lgbm", "gp", "lstm", "timesfm"] if name in which]
+    total = len(selected_models)
+    step = 0
 
     if "lgbm" in which:
-        print("\n[1/3] Training LightGBM …")
+        step += 1
+        print(f"\n[{step}/{total}] Training LightGBM …")
         lgbm = LGBMForecaster()
         lgbm.fit(X_tr, y_tr, X_val, y_val)
         preds = lgbm.predict(X_test)
@@ -69,7 +73,8 @@ def run_benchmark(
         results["lgbm"]["top_features"] = top5
 
     if "gp" in which:
-        print("\n[2/3] Training Gaussian Process (subset of last 600 training points) …")
+        step += 1
+        print(f"\n[{step}/{total}] Training Gaussian Process (subset of last 600 training points) …")
         gp = GPForecaster(n_train_max=600)
         gp.fit(X_train, y_train)
         preds, stds = gp.predict(X_test, return_std=True)
@@ -85,13 +90,23 @@ def run_benchmark(
         )
 
     if "lstm" in which:
-        print("\n[3/3] Training LSTM …")
+        step += 1
+        print(f"\n[{step}/{total}] Training LSTM …")
         lstm = LSTMForecaster(epochs=30)
         lstm.fit(X_train, y_train)
         preds = lstm.predict(X_test, context=X_train)
         results["lstm"] = {"mae": mae_safe(y_test.values, preds), "rmse": rmse(y_test.values, preds)}
         lstm.save(f"{models_dir}/lstm_{target}.joblib")
         print(f"  MAE={results['lstm']['mae']:.2f}  RMSE={results['lstm']['rmse']:.2f}")
+
+    if "timesfm" in which:
+        step += 1
+        print(f"\n[{step}/{total}] Running TimesFM-3 (pretrained, no fitting) …")
+        timesfm = TimesFMForecaster(device="cpu", batch_size=8)
+        preds = timesfm.predict(y_train.values.astype(np.float32), horizon=len(y_test), return_quantiles=False)
+        preds = np.asarray(preds, dtype=np.float32).reshape(-1)
+        results["timesfm"] = {"mae": mae_safe(y_test.values, preds), "rmse": rmse(y_test.values, preds)}
+        print(f"  MAE={results['timesfm']['mae']:.2f}  RMSE={results['timesfm']['rmse']:.2f}")
 
     # Summary table
     print(f"\n{'═' * 40}")
@@ -121,8 +136,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["lgbm", "gp", "lstm"],
-        choices=["lgbm", "gp", "lstm"],
+        default=["lgbm", "gp", "lstm", "timesfm"],
+        choices=["lgbm", "gp", "lstm", "timesfm"],
         help="Which models to train",
     )
     args = parser.parse_args()
