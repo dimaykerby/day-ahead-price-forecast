@@ -106,9 +106,10 @@ day_ahead_forecast/
 ├── src/
 │   ├── __init__.py
 │   ├── features.py                  # feature engineering + dynamic scaling
-│   └── models.py                    # LightGBM, GP, LSTM wrappers
+│   ├── models.py                    # LightGBM, GP, LSTM wrappers
+│   └── risk.py                      # volatility, correlations, VaR/ES, stress tests, correlated MC
 ├── models/                          # serialised artefacts (git-ignored)
-├── app.py                           # Streamlit app (3 tabs)
+├── app.py                           # Streamlit app (4 tabs)
 ├── train.py                         # CLI benchmark runner
 ├── requirements.txt
 └── README.md
@@ -180,11 +181,12 @@ Serialised models are saved to `models/` and a `benchmark_{target}.json` summary
 streamlit run app.py
 ```
 
-Open `http://localhost:8501`. The app has three tabs:
+Open `http://localhost:8501`. The app has four tabs:
 
 | Tab | Contents |
 |---|---|
 | **📊 Data Explorer** | Interactive price series, correlation matrix, hourly load profile, rolling volatility |
+| **⚠️ Portfolio Risk** | Rolling/EWMA volatility, static, rolling and calm-vs-stressed correlations, portfolio VaR/ES with risk attribution, shock-propagation stress test, correlated Monte Carlo P&L |
 | **🏆 Model Benchmark** | One-click training, metric comparison bar chart, LightGBM feature importance |
 | **🔮 Forecast** | Actual vs predicted overlay, 95% CI band (GP), scatter plot with OLS trendline, windowed MAE/RMSE |
 
@@ -229,6 +231,7 @@ Outputs are written under `outputs/`:
 - `annual_revenue_histogram.html` — histogram with P10/P50/P90 markers
 - `sensitivity_table.csv` — base and stress cases (efficiency, spreads, availability)
 - `finance_p50.csv` — simple project/equity NPV and IRR at P50 revenue
+- `downside_risk.csv` — P5 revenue, expected shortfall, debt-service breakeven and probability of missing it
 - `investment_memo.md` — short investment-style narrative summary
 
 #### Error Model Options
@@ -245,6 +248,34 @@ The default dispatch is intentionally simple and transparent:
 - Revenue is gross arbitrage spread before market fees and imbalance costs
 
 This is a practical first benchmark before moving to a full LP/MILP optimizer.
+
+### Market Risk Analytics
+
+`src/risk.py` provides the risk layer behind the **Portfolio Risk** tab. It works on daily baseload price changes, so an exposure of `w` MWh/day yields a daily P&L of `w × Δprice`.
+
+| Topic | Methods |
+|---|---|
+| **Volatility** | Rolling and EWMA (RiskMetrics λ=0.94) volatility, skew, excess kurtosis, worst/best daily move |
+| **Correlations** | Pearson/Spearman matrices, rolling pairwise correlation, calm-vs-stressed regime correlation |
+| **Portfolio risk** | Historical and normal VaR / Expected Shortfall, Euler risk attribution by market |
+| **Stress testing** | Beta-based shock propagation from one market to the rest of the portfolio |
+| **Simulation** | Correlated Monte Carlo of portfolio P&L: whole-day bootstrap (keeps dependence and fat tails) or multivariate normal |
+
+On the 2022 data, average cross-market correlation rises from about 0.37 in calm weeks to about 0.57 in high-volatility weeks, so diversification benefits shrink exactly when they are needed.
+
+#### Gas hub prices
+
+Drop a daily file at `data/gas_hub_prices.csv` (EUR/MWh, one column per hub; `date` is required) and the Portfolio Risk tab offers three market sets: power only, gas hubs, and gas hubs + power + spark spreads.
+
+```csv
+date,ttf,psv,peg,the
+2022-01-03,80.1,82.4,81.0,80.6
+```
+
+- No gap filling: hubs do not trade at weekends, so returns across a weekend are multi-day changes.
+- Spark spread = power − gas / efficiency − carbon, using PSV for Italy, PEG for France, THE for Germany and TTF otherwise (UK excluded: GBP and p/therm units).
+- Hub prices must cover the same period as the ENTSO-E data (2022) to use the combined set.
+- The default book is a PSV/TTF spread (long PSV, short TTF); exposures are editable in the tab.
 
 ---
 

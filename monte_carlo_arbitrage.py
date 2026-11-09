@@ -27,6 +27,7 @@ import pandas as pd
 import plotly.express as px
 
 from src.features import build_features, load_data
+from src.risk import tail_stats
 from src.models import GPForecaster, LGBMForecaster, LSTMForecaster, TimesFMForecaster
 
 
@@ -348,6 +349,19 @@ def finance_kpis(
     }
 
 
+def downside_risk(annual_revenues: np.ndarray, cfg: FinanceConfig) -> dict[str, float]:
+    """Tail metrics and the probability of failing to cover fixed opex plus debt service."""
+    tail = tail_stats(annual_revenues, 0.05)
+    debt_service = _annuity_payment(cfg.capex_eur * cfg.debt_share, cfg.debt_rate, cfg.debt_tenor_years)
+    breakeven = cfg.fixed_opex_eur_per_year + debt_service
+    return {
+        "p05_revenue_eur": tail["quantile"],
+        "es05_revenue_eur": tail["tail_mean"],
+        "debt_service_breakeven_eur": breakeven,
+        "prob_below_breakeven": float(np.mean(annual_revenues < breakeven)),
+    }
+
+
 def _write_memo(
     out_dir: Path,
     target: str,
@@ -357,6 +371,8 @@ def _write_memo(
     revenue_stats: dict[str, float],
     sensitivity_df: pd.DataFrame,
     p50_finance: dict[str, float],
+    downside: dict[str, float],
+    p10_finance: dict[str, float],
 ):
     try:
         sensitivity_table = sensitivity_df.to_markdown(index=False)
@@ -390,6 +406,13 @@ Given a day-ahead electricity price forecast for {target.title()}, what is the d
 - Project IRR: {100 * p50_finance['project_irr']:.2f}%
 - Equity NPV: {p50_finance['equity_npv_eur']:,.0f} EUR
 - Equity IRR: {100 * p50_finance['equity_irr']:.2f}%
+
+## Downside risk
+- P5 annual revenue: {downside['p05_revenue_eur']:,.0f} EUR
+- Expected shortfall (mean of worst 5% scenarios): {downside['es05_revenue_eur']:,.0f} EUR
+- Revenue needed to cover fixed opex and debt service: {downside['debt_service_breakeven_eur']:,.0f} EUR
+- Probability of falling short of that level: {100 * downside['prob_below_breakeven']:.1f}%
+- Project NPV at P10 revenue: {p10_finance['project_npv_eur']:,.0f} EUR
 
 ## Plain-language summary
 We simulated {n_sims} plausible market futures around the forecast and re-ran battery dispatch in each one.
@@ -480,6 +503,10 @@ def main():
     finance_path = out_dir / "finance_p50.csv"
     pd.DataFrame([p50_finance]).to_csv(finance_path, index=False)
 
+    downside = downside_risk(dist_df["annual_revenue_eur"].values, finance_cfg)
+    pd.DataFrame([downside]).to_csv(out_dir / "downside_risk.csv", index=False)
+    p10_finance = finance_kpis(revenue_stats["p10"], finance_cfg)
+
     fig = px.histogram(
         dist_df,
         x="annual_revenue_eur",
@@ -504,6 +531,8 @@ def main():
         revenue_stats=revenue_stats,
         sensitivity_df=sensitivity_df,
         p50_finance=p50_finance,
+        downside=downside,
+        p10_finance=p10_finance,
     )
 
     print("Monte Carlo arbitrage analysis complete")
