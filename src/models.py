@@ -110,13 +110,13 @@ class GPForecaster:
 
     def fit(self, X_train: pd.DataFrame, y_train: pd.Series):
         X_sub = self._select(X_train).tail(self.n_train_max)
-        # Use the pre-computed rolling z-score of the target so GP works on a
+        # Target is the price in units of the trailing 24h regime, so the GP sees a
         # stationary, unit-variance signal rather than raw crisis-level prices.
-        self._use_zscore = "roll_zscore_24h" in X_train.columns
+        self._use_zscore = "roll_mean_24h" in X_train.columns
         if self._use_zscore:
-            y_sub = X_train.loc[X_sub.index, "roll_zscore_24h"]
             self._y_mean = X_train["roll_mean_24h"].loc[X_sub.index]
             self._y_std = X_train["roll_std_24h"].loc[X_sub.index]
+            y_sub = (y_train.loc[X_sub.index] - self._y_mean) / (self._y_std + 1e-8)
         else:
             y_sub = y_train.loc[X_sub.index]
         self.scaler.fit(X_sub)

@@ -54,10 +54,11 @@ def _rolling_zscore(series: pd.Series, window: int) -> pd.DataFrame:
     """
     Rolling z-score normalization (shift by 1 to prevent future leakage).
     Captures the local price regime — crucial for the high-volatility 2022 dataset.
+    The z-score itself is shifted too: it must describe the previous price, not the one being predicted.
     """
     mu = series.rolling(window, min_periods=window // 4).mean().shift(1)
     sigma = series.rolling(window, min_periods=window // 4).std().shift(1)
-    z = (series - mu) / (sigma + 1e-8)
+    z = ((series - mu) / (sigma + 1e-8)).shift(1)
     return pd.DataFrame(
         {f"roll_zscore_{window}h": z, f"roll_mean_{window}h": mu, f"roll_std_{window}h": sigma},
         index=series.index,

@@ -64,10 +64,10 @@ Standard global normalisation (fit once on training set) fails on non-stationary
 The solution — **rolling z-score normalisation** — computes mean and standard deviation over a trailing window, with a mandatory 1-step shift to prevent future leakage:
 
 ```
-z_t = (price_t − μ_{t−1, window}) / (σ_{t−1, window} + ε)
+z_t = (price_{t−1} − μ_{t−2, window}) / (σ_{t−2, window} + ε)
 ```
 
-Two window sizes are used: **24 hours** (intraday regime) and **168 hours** (weekly regime). The resulting features directly inform the LightGBM model about the current price level and its variability — the rolling features rank as the top-5 most important by gain.
+Two window sizes are used: **24 hours** (intraday regime) and **168 hours** (weekly regime). The z-score, mean and standard deviation are all shifted so they describe the past only; an unshifted z-score would let a model reconstruct the current price exactly (`price = z·σ + μ`). The rolling statistics give the models the recent price level and its variability.
 
 ### Feature Engineering
 
@@ -166,9 +166,9 @@ python train.py --data data/electricity_dah_prices.csv \
 ────────────────────────────────────────
   Model       MAE (€/MWh)  RMSE (€/MWh)
 ────────────────────────────────────────
-  lgbm              11.52         22.41
-  gp                28.14         45.89
-  lstm              18.73         32.05
+  lgbm              16.31         22.39
+  gp                46.88         61.39
+  lstm              25.99         35.93
 ════════════════════════════════════════
 ```
 
@@ -221,9 +221,11 @@ python monte_carlo_arbitrage.py \
 
 Example result from a validated run (`italy`, `lgbm`, `n-sims=1000`, `horizon=96h`):
 
-- Annual revenue P10: ~543,832 EUR
-- Annual revenue P50: ~734,623 EUR
-- Annual revenue P90: ~814,051 EUR
+- Annual revenue P10: ~919,916 EUR
+- Annual revenue P50: ~999,051 EUR
+- Annual revenue P90: ~1,073,462 EUR
+
+Dispatch is chosen on each simulated price path itself (perfect foresight within a scenario), so noisier paths widen daily spreads and raise revenue. Treat these figures as an upper bound, not an expected value.
 
 Outputs are written under `outputs/`:
 
@@ -283,13 +285,24 @@ date,ttf,psv,peg,the
 
 Evaluated on the chronological 20% test set (last ~72 days of 2022, including the high-volatility Q4 period):
 
-| Model | MAE (€/MWh) | RMSE (€/MWh) | Uncertainty |
-|---|---|---|---|
-| LightGBM | **~11.5** | **~22** | ✗ |
-| LSTM | ~18–20 | ~32–36 | ✗ |
-| Gaussian Process | ~28–32 | ~46–50 | ✓ (calibrated 95% CI) |
+| Market | 1h persistence | LightGBM | LSTM | GP | TimesFM |
+|---|---|---|---|---|---|
+| Germany | 15.89 | 16.31 | 25.99 | 46.88 | 103.0 |
+| France | 17.37 | 21.80 | 28.08 | 43.74 | 103.4 |
+| Italy | 17.40 | 19.74 | 30.78 | 43.71 | 92.0 |
+| Belgium | 18.23 | 18.21 | 30.86 | 47.98 | 110.7 |
+| Spain | **9.67** | 15.51 | 19.04 | 23.56 | 58.0 |
+| UK | 16.72 | **15.63** | 25.22 | 42.39 | 85.2 |
 
-LightGBM dominates on point-forecast accuracy thanks to its ability to exploit the rich lag and dynamic-scaling feature set. The GP trades accuracy for calibrated uncertainty — useful when downstream decisions require risk quantification. The LSTM sits between the two, learning temporal patterns directly from sequences without relying on manual lag selection.
+MAE in €/MWh (UK in £/MWh). Germany RMSE: LightGBM 22.39, LSTM 35.93, GP 61.39. Only the GP provides uncertainty (calibrated 95% CI). TimesFM figures come from an earlier run; it uses only the raw price history, so the feature fix does not affect it, but it forecasts the whole ~1,700-hour test horizon in one go and is not directly comparable.
+
+**Read these results with care.** Two checks shaped them:
+
+- **Leakage fixed.** The rolling z-score used to include the current price, so models could reconstruct the target (`price = z·σ + μ`). LightGBM's Germany MAE was 11.5 with the leak and 16.3 without. The earlier tables overstated accuracy.
+- **No model clearly beats a naive baseline.** Predicting "the price one hour ago" is as good as or better than LightGBM in 5 of 6 markets (it wins in Germany, France, Italy and Spain, and ties in Belgium). The models do not yet add value over persistence at this horizon.
+- **Not a true day-ahead setup.** `lag_1h` and the 1h-lagged spreads are not known when day-ahead prices are set, so these are effectively one-hour-ahead forecasts. A genuine day-ahead benchmark needs lags of 24h or more and information available before the auction closes.
+
+The GP trades accuracy for calibrated uncertainty. Its numbers did not change with the fix: it never used the z-score as an input, and its training target is the same quantity as before.
 
 ---
 
